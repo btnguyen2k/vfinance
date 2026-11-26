@@ -59,7 +59,9 @@ Keep source coverage in the source-test command, not the wheel check.
 - Keep `pyproject.toml` and `uv.lock` aligned when changing dependencies. Routine
   commands use `--locked`; dependency updates use `uv add`, `uv remove`, or
   `uv lock --upgrade`. The lockfile fixes development/CI versions, while package
-  consumers use the declared runtime ranges.
+  consumers use the declared runtime ranges. Generate committed lockfiles with
+  `uv lock --default-index https://pypi.org/simple`; do not persist undeclared
+  local index overrides in package registry sources.
 - Cap direct dependencies below their next major. Pre-1.0 development tools use
   `<1`, not a cap at the next minor. Runtime minimums use `major.minor.0`, such as
   `cloudscraper>=1.2.0,<2`; retain the specific patch for `0.0.x` minimums.

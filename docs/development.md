@@ -95,6 +95,9 @@ uv sync --locked
 ```
 
 Commit `pyproject.toml` and `uv.lock` together when changing dependencies.
+Generate committed lockfiles against public PyPI with
+`uv lock --default-index https://pypi.org/simple`. An alternate local index
+recorded in the lockfile will fail CI unless it is also configured in the project.
 Use `--locked` for routine development and CI so stale lockfiles fail rather
 than being silently rewritten.
 
