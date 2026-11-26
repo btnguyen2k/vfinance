@@ -27,7 +27,7 @@ permissions:
 
 jobs:
   Test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -47,10 +47,10 @@ jobs:
           cache-dependency-glob: uv.lock
       - name: Install Python
         run: uv python install ${{ matrix.python-version }}
-      - name: Show Python version
-        run: python --version
       - name: Install dependencies
         run: uv sync --locked --managed-python
+      - name: Show Python version
+        run: uv run --no-sync python --version
       - name: Lint
         run: uv run --locked ruff check .
       - name: Check formatting
@@ -69,15 +69,15 @@ jobs:
       - uses: astral-sh/setup-uv@v10.4.0
         name: Set up uv
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.12'
           enable-cache: true
           cache-dependency-glob: uv.lock
       - name: Install Python
         run: uv python install 3.12
-      - name: Show Python version
-        run: python --version
       - name: Install dependencies
         run: uv sync --locked --managed-python
+      - name: Show Python version
+        run: uv run --no-sync python --version
       - name: Build wheel and source distribution
         run: uv build --no-sources
       - name: Check publishing inputs without uploading
