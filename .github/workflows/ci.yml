@@ -39,7 +39,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.target-sha || github.sha }}
-      - uses: astral-sh/setup-uv@v10.4.0
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         name: Set up uv
         with:
           python-version: ${{ matrix.python-version }}
@@ -66,7 +66,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.target-sha || github.sha }}
-      - uses: astral-sh/setup-uv@v10.4.0
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         name: Set up uv
         with:
           python-version: '3.12'
@@ -86,3 +86,29 @@ jobs:
         run: |
           uv pip install --python .venv/bin/python --no-index --reinstall --no-deps dist/*.whl
           uv run --no-sync pytest
+
+  ReleaseDryRun:
+    if: github.event_name == 'push'
+    needs: [Test, Build]
+    runs-on: ubuntu-latest
+    outputs:
+      RESULT: ${{ steps.release_dry_run.outputs.result }}
+      VERSION: ${{ steps.release_dry_run.outputs.releaseVersion }}
+      RELEASE_NOTES: ${{ steps.release_dry_run.outputs.releaseNotes }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target-sha || github.sha }}
+      - name: Install Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 'lts/*'
+      - name: Release (dry-run)
+        id: release_dry_run
+        uses: btnguyen2k/action-semrelease@37fe196d36496098bd291e9519c86772ea2e0c0d # v5.1.0
+        with:
+          dry-run: true
+          github-token: ${{ github.token }}
+          branches: ${{ github.ref_name }}
+          tag-prefix: ${{ env.TAG_PREFIX }}
