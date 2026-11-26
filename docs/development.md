@@ -17,9 +17,11 @@ vfinance
 |-- src
 |   `-- vfinance
 |       |-- __init__.py     # Package entry point and version
+|       |-- _utils.py       # Private async HTTP utilities
 |       `-- py.typed        # PEP 561 typing marker
 |-- tests
-|   `-- test_package.py     # Installation and package-data smoke tests
+|   |-- test_package.py     # Installation and package-data smoke tests
+|   `-- test_utils.py       # HTTP helper behavior and error handling
 |-- .editorconfig
 |-- .gitignore
 |-- LICENSE.md
@@ -79,6 +81,11 @@ Keep an explicit upper bound on each direct dependency; raise it deliberately
 when adopting a new major version. For example, use
 `uv add --dev "pytest>=9.2.0,<10"` to keep pytest below version 10.
 Pre-1.0 development tools use `<1`; the build backend retains its narrower range.
+
+Set runtime dependency minimums to `major.minor.0`, for example
+`cloudscraper>=1.2.0,<2`. For `0.0.x` versions, use the specific patch minimum
+(for example `>=0.0.5`), not `>=0.0.0`. This minimum-version rule does not apply
+to the build backend or the `dev` dependency group.
 
 To update locked dependencies within the declared version ranges:
 
