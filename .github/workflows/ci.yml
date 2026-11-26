@@ -1,0 +1,88 @@
+name: ci
+
+on:
+  push:
+    branches: [ '**' ]
+    paths-ignore:
+      - '.github/dependabot.yaml'
+  pull_request:
+    types: [ opened, edited, reopened, synchronize, review_requested ]
+    branches: [ '**' ]
+  workflow_call:
+    inputs:
+      target-sha:
+        description: 'Commit SHA to check out and analyze.'
+        required: false
+        type: string
+        default: ''
+
+  # Allow manually trigger
+  workflow_dispatch:
+
+env:
+  TAG_PREFIX: v
+
+permissions:
+  contents: read
+
+jobs:
+  Test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-26.04-arm, windows-latest]
+        python-version: ['3.12', '3']
+    name: Build and Test with Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target-sha || github.sha }}
+      - uses: astral-sh/setup-uv@v10.4.0
+        name: Set up uv
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install Python
+        run: uv python install ${{ matrix.python-version }}
+      - name: Show Python version
+        run: python --version
+      - name: Install dependencies
+        run: uv sync --locked --managed-python
+      - name: Lint
+        run: uv run --locked ruff check .
+      - name: Check formatting
+        run: uv run --locked ruff format --check --diff .
+      - name: Test with coverage
+        run: uv run --locked pytest --cov=src --cov-report=term-missing
+
+  Build:
+    name: Build and test distributions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target-sha || github.sha }}
+      - uses: astral-sh/setup-uv@v10.4.0
+        name: Set up uv
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Install Python
+        run: uv python install 3.12
+      - name: Show Python version
+        run: python --version
+      - name: Install dependencies
+        run: uv sync --locked --managed-python
+      - name: Build wheel and source distribution
+        run: uv build --no-sources
+      - name: Check publishing inputs without uploading
+        run: uv publish --dry-run
+      - name: Install and test the wheel
+        run: |
+          uv pip install --python .venv/bin/python --no-index --reinstall --no-deps dist/*.whl
+          uv run --no-sync pytest
