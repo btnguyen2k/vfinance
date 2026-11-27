@@ -45,9 +45,10 @@ Keep source coverage in the source-test command, not the wheel check.
   and the package version. `vfinance.__version__` reads installed distribution
   metadata rather than duplicating a version literal. Bump package versions with
   `uv version --bump patch` (or `minor`/`major`).
-- `vfinance._utils` is the internal transport boundary. Its async fetcher wraps
-  synchronous CloudScraper GET requests with `asyncio.to_thread`, including body
-  decoding and response cleanup. Keep these helpers private rather than
+- `vfinance._utils` is the internal transport boundary. The CloudScraper helper
+  offloads synchronous requests, decoding, and cleanup with `asyncio.to_thread`.
+  The Playwright helper uses the async browser API and returns rendered HTML
+  from an isolated context/page. Keep both helpers private rather than
   re-exporting them from the package root.
 - Tests exercise the installed editable package during development and the
   installed wheel in the distribution job. Package smoke tests also import with
@@ -66,13 +67,20 @@ Keep source coverage in the source-test command, not the wheel check.
   `<1`, not a cap at the next minor. Runtime minimums use `major.minor.0`, such as
   `cloudscraper>=1.2.0,<2`; retain the specific patch for `0.0.x` minimums.
   The runtime minimum rule excludes build-backend and dev dependencies.
-- Preserve the HTTP helper's ownership and error contract: close each response,
-  leave the caller's scraper open, return HTTP error statuses, and propagate
+- Preserve the CloudScraper helper's ownership and error contract: close each
+  response, leave the caller's scraper open, return HTTP error statuses, and propagate
   request/body-reading exceptions. Serialize shared-scraper access or use
   separate instances; cancelling the await does not stop the blocking worker.
-- `HttpResponse.is_successful()` includes statuses 100-399. Redirects follow by
-  default; `allow_redirects=False` exposes an unfollowed redirect's `Location`
-  as an absolute `redirect_url`, resolved against the response URL.
+- Use WebKit by default for Playwright-based fetching and browser setup. Launch
+  it with `await playwright.webkit.launch(headless=True)`, while keeping the
+  helper browser-agnostic and its async `Browser` caller-owned.
+- The Playwright helper leaves its caller-owned browser open and closes its own
+  context/page on success, error, and cancellation. Its `timeout` uses native
+  milliseconds (30,000 by default; 0 disables it). Browser binaries are needed
+  for real browser use, not the mocked unit tests; see the development guide.
+- `HttpResponse.is_successful()` includes statuses 100-399. CloudScraper follows
+  redirects by default; `allow_redirects=False` exposes an unfollowed redirect's
+  `Location` as an absolute `redirect_url`, resolved against the response URL.
 - HTTP tests use `asyncio.run` with mocked responses or transport adapters,
   including real CloudScraper redirect handling without live website requests.
 - Keep the [README](../README.md) business-focused. Contributor internals belong

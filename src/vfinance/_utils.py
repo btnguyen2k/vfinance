@@ -7,11 +7,12 @@ from typing import Any
 from urllib.parse import urljoin
 
 from cloudscraper import CloudScraper
+from playwright.async_api import Browser
 
 
 @dataclass(frozen=True, slots=True)
 class HttpResponse:
-    """Decoded HTTP response with an optional, unfollowed redirect target."""
+    """HTTP status and text with an optional, unfollowed redirect target."""
 
     status: int
     content: str
@@ -87,3 +88,97 @@ async def fetch_url_cloudscraper_async(
             )
 
     return await asyncio.to_thread(fetch)
+
+
+async def fetch_url_playwright_async(
+    url: str, browser: Browser, **kwargs: Any
+) -> HttpResponse:
+    """Fetch rendered HTML using a caller-owned async Playwright browser.
+
+    Copy supported Browser.new_context options into a fresh context and
+    supported Page.goto options into navigation kwargs. Nonnegative, finite
+    int/float timeout values are milliseconds, defaulting to 30_000 when missing
+    or invalid; 0 disables the timeout. Navigation waits for load unless
+    wait_until is supplied.
+    Unsupported kwargs are ignored.
+
+    Return the navigation status and page.content(), not the raw response body.
+    Redirects are followed by the browser. Close the context and its pages on
+    success, failure, or cancellation, but leave the browser open.
+    HTTP error statuses are returned normally; Playwright exceptions propagate.
+    Raise ValueError if navigation produces no HTTP response, as with about:blank.
+    """
+    context_kwargs: dict[str, Any] = {}
+    for option in (
+        "accept_downloads",
+        "base_url",
+        "bypass_csp",
+        "client_certificates",
+        "color_scheme",
+        "contrast",
+        "default_browser_type",
+        "device_scale_factor",
+        "extra_http_headers",
+        "forced_colors",
+        "geolocation",
+        "has_touch",
+        "http_credentials",
+        "ignore_https_errors",
+        "is_mobile",
+        "java_script_enabled",
+        "locale",
+        "no_viewport",
+        "offline",
+        "permissions",
+        "proxy",
+        "record_har_content",
+        "record_har_mode",
+        "record_har_omit_content",
+        "record_har_path",
+        "record_har_url_filter",
+        "record_video_dir",
+        "record_video_size",
+        "reduced_motion",
+        "screen",
+        "service_workers",
+        "storage_state",
+        "strict_selectors",
+        "timezone_id",
+        "user_agent",
+        "viewport",
+    ):
+        if option in kwargs:
+            context_kwargs[option] = kwargs[option]
+
+    goto_kwargs: dict[str, Any] = {}
+    timeout = kwargs.get("timeout")
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not 0 <= timeout < math.inf
+    ):
+        timeout = 30_000
+    goto_kwargs["timeout"] = timeout
+    for option in ("wait_until", "referer"):
+        if option in kwargs:
+            goto_kwargs[option] = kwargs[option]
+
+    context = await browser.new_context(**context_kwargs)
+    try:
+        page = await context.new_page()
+        response = await page.goto(url, **goto_kwargs)
+        if response is None:
+            raise ValueError("Navigation did not return an HTTP response")
+        location = response.headers.get("location")
+        redirect_url = (
+            urljoin(response.url, location)
+            if response.status in (301, 302, 303, 307, 308) and location
+            else None
+        )
+        return HttpResponse(
+            status=response.status,
+            content=await page.content(),
+            redirect_url=redirect_url,
+        )
+    finally:
+        await context.close()

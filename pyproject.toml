@@ -13,6 +13,7 @@ license-files = ["LICENSE.md"]
 authors = [{ name = "Thanh Ba Nguyen" }]
 dependencies = [
     "cloudscraper>=1.2.0,<2",
+    "playwright>=1.62.0,<2",
 ]
 classifiers = [
     "Development Status :: 1 - Planning",

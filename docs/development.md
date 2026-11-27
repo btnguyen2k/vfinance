@@ -71,6 +71,37 @@ excluded by `.gitignore`. Do not commit them. Keep `uv.lock` in version control;
 it makes contributor and CI environments reproducible without pinning the
 dependencies of people installing the published package.
 
+## HTTP utilities
+
+Private helpers in `vfinance._utils` return `HttpResponse` objects. The
+Playwright helper accepts a `Browser` from the async API and returns the rendered
+DOM after navigation (`load` by default), rather than the raw response body.
+It creates and closes an isolated context/page for each call, leaving the
+caller's browser open. Its `timeout` is in milliseconds (30,000 by default;
+0 disables it); supported context and navigation options are copied explicitly.
+Both helpers return ordinary HTTP error statuses and propagate request,
+navigation, and content-reading exceptions to the awaiting caller.
+
+**WebKit is the default browser for Playwright-based fetching.** Launch it with
+`await playwright.webkit.launch(headless=True)` inside
+`async with async_playwright() as playwright`, then pass it to
+`fetch_url_playwright_async`. The helper itself remains browser-agnostic and does
+not launch a browser; the caller is responsible for closing its browser.
+
+For real browser use, install WebKit after syncing dependencies:
+
+```sh
+uv run --locked playwright install webkit
+```
+
+On Linux, including Docker builds, also install WebKit's system dependencies:
+
+```sh
+uv run --locked playwright install --with-deps webkit
+```
+
+The unit tests mock browser APIs and do not require browser downloads.
+
 ## Dependency management
 
 Use `uv add <package>` for runtime dependencies and `uv add --dev <package>` for
