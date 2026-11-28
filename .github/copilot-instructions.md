@@ -39,7 +39,7 @@ Keep source coverage in the source-test command, not the wheel check.
 
 - vfinance is a typed, `src`-layout library for Vietnam stock-market data.
   Implemented APIs include private HTTP utilities and async symbol information
-  in `vfinance.stocks`; the public quote, history, and event APIs are tracked in the
+  and quotes in `vfinance.stocks`; the history and event APIs are tracked in the
   [roadmap](../docs/roadmap.md).
 - `pyproject.toml` owns package metadata, dependency ranges, tool configuration,
   and the package version. `vfinance.__version__` reads installed distribution
@@ -64,9 +64,13 @@ Keep source coverage in the source-test command, not the wheel check.
   entries without renewing TTLs. Get/delete misses do not create domains.
   Cache tests isolate the module registry and advance a controlled clock rather
   than sleeping.
-- `vfinance.models` defines shared business data models such as `SymbolInfo`.
+- `vfinance.models` defines immutable Pydantic v2 business models `SymbolInfo`
+  and `StockQuote`. Keep strict validation, forbid unexpected fields, and reject
+  non-finite prices. `StockQuote.timestamp_str` is a read-only computed ISO field
+  included in normal dumps. Use `model_dump`/`model_dump_json`, not dataclass
+  helpers; use `round_trip=True` when serializing quotes for input validation.
   Consumers import these types from `vfinance.models`; API modules reference
-  them through private module aliases rather than exposing imported types.
+  them through normal module imports rather than re-exporting imported types.
 - `vfinance.utils.normalize_ticker` accepts `CODE`, `CODE.VN`, or `EXCHANGE:CODE`
   without validating the exchange prefix or symbol's existence. Codes may have
   single dots between nonempty alphanumeric parts, but extracted codes must not
@@ -78,6 +82,16 @@ Keep source coverage in the source-test command, not the wheel check.
   Exchange, instrument type, and index code are uppercase;
   GICS labels and other supplied text stay unchanged, including empty strings.
   Missing/null optional values are `None` and an unavailable overview is empty.
+  `vfinance._dnse.get_quote` reads the latest aligned one-minute OHLCV bar,
+  starting from UTC+7 midnight and following `nextTime` backward over empty
+  periods for at most 14 previous calendar days. JSON missing any of `t`, `o`,
+  `h`, `l`, or `c` is an error response and returns `None`, independent of
+  status/code/message fields. Keep request ranges valid while stepping back:
+  reversed ranges return null arrays that resemble invalid symbols. It returns
+  UTC+7 datetimes and VND prices (response prices times 1000), preserves null
+  closing prices, validates whole-unit volume, and uses `get_info` for the
+  authoritative listing exchange. Missing symbols/history/profiles return
+  `None`; service/data/transport errors and cancellation propagate.
   `vfinance.stocks.get_info` caches successful profiles in `SYMBOL-INFO`, keyed
   by the normalized symbol, for 86400 seconds (24 hours). Cache misses delegate
   to this adapter; missing symbols and lookup errors are not cached.
@@ -87,6 +101,9 @@ Keep source coverage in the source-test command, not the wheel check.
   They return `None` unless the `raise_on_error` keyword is supplied, regardless
   of its value, in which case the original exception is re-raised. Missing
   symbols still return `None`; cancellation propagates without failure logging.
+  `vfinance.stocks.get_quote` follows the same normalization and error policy,
+  caching only successful quotes in `STOCK-QUOTE` for 300 seconds (5 minutes).
+  Missing quotes and lookup failures are not cached.
 - Tests exercise the installed editable package during development and the
   installed wheel in the distribution job. Package smoke tests also import with
   Python's `-I` isolation from a temporary directory and verify `py.typed`.
@@ -129,10 +146,13 @@ Keep source coverage in the source-test command, not the wheel check.
 
 ## Key conventions
 
-- Never re-export an import, including through compatibility aliases or
-  `__all__`. Public exports must be defined in the exporting module. Import
-  shared models from their defining module and use private module aliases
-  such as `_models.SymbolInfo` in consumers.
+- Never deliberately re-export an import, including through compatibility
+  aliases or `__all__`. Declared public exports must be defined in the exporting
+  module. Import shared models from their defining module and use normal module
+  imports, such as `from . import models`, in consumers.
+- Use normal dependency imports. Do not introduce underscore aliases solely to
+  hide imported dependencies; an ordinary import is not a deliberate re-export.
+  Keep genuinely private module, helper, and implementation-state names private.
 - Keep `pyproject.toml` and `uv.lock` aligned when changing dependencies. Routine
   commands use `--locked`; dependency updates use `uv add`, `uv remove`, or
   `uv lock --upgrade`. The lockfile fixes development/CI versions, while package

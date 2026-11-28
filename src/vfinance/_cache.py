@@ -1,12 +1,11 @@
 """Private, domain-based storage for reusable temporary values."""
 
-from dataclasses import dataclass as _dataclass
-from dataclasses import field as _field
-from threading import RLock as _RLock
-from time import monotonic as _monotonic
-from typing import Any as _Any
+from dataclasses import dataclass, field
+from threading import RLock
+from time import monotonic
+from typing import Any
 
-import cachetools as _cachetools
+import cachetools
 
 __all__ = [
     "Cache",
@@ -21,7 +20,7 @@ __all__ = [
 _DEFAULT_MAX_SIZE = 1000
 
 
-@_dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True)
 class CacheEntry:
     """A cached value and its lifetime.
 
@@ -33,9 +32,9 @@ class CacheEntry:
             is disabled. This is not a Unix timestamp.
     """
 
-    value: _Any
+    value: Any
     ttl: int = 0
-    expires_at: float | None = _field(init=False)
+    expires_at: float | None = field(init=False)
 
     def __post_init__(self) -> None:
         ttl = self.ttl
@@ -44,7 +43,7 @@ class CacheEntry:
         expires_at = None
         if ttl > 0:
             try:
-                expires_at = _monotonic() + ttl
+                expires_at = monotonic() + ttl
             except OverflowError:
                 # This clock cannot reach an unrepresentably long lifetime.
                 expires_at = float("inf")
@@ -58,7 +57,7 @@ class CacheEntry:
             bool: True at or after the deadline; False when expiry is disabled
                 or the deadline has not been reached.
         """
-        return self.expires_at is not None and _monotonic() >= self.expires_at
+        return self.expires_at is not None and monotonic() >= self.expires_at
 
 
 class Cache:
@@ -84,12 +83,12 @@ class Cache:
         """
         if isinstance(max_size, bool) or not isinstance(max_size, int) or max_size <= 0:
             max_size = _DEFAULT_MAX_SIZE
-        self._cache: _cachetools.LRUCache[str, CacheEntry] = _cachetools.LRUCache(
+        self._cache: cachetools.LRUCache[str, CacheEntry] = cachetools.LRUCache(
             maxsize=max_size
         )
-        self._lock = _RLock()
+        self._lock = RLock()
 
-    def set(self, key: str, value: _Any, ttl: int = 0) -> None:
+    def set(self, key: str, value: Any, ttl: int = 0) -> None:
         """Store a reusable value or remove it when None is supplied.
 
         Args:
@@ -111,7 +110,7 @@ class Cache:
             else:
                 self._cache[key] = CacheEntry(value=value, ttl=ttl)
 
-    def get(self, key: str) -> _Any | None:
+    def get(self, key: str) -> Any | None:
         """Retrieve a retained value while its lifetime remains valid.
 
         Args:
@@ -148,7 +147,7 @@ class Cache:
 
 
 _domains: dict[str, Cache] = {}
-_domains_lock = _RLock()
+_domains_lock = RLock()
 
 
 def create_domain(domain: str, max_size: int = _DEFAULT_MAX_SIZE) -> None:
@@ -186,7 +185,7 @@ def delete_domain(domain: str) -> None:
         _domains.pop(domain, None)
 
 
-def set(domain: str, key: str, value: _Any, ttl: int = 0) -> None:
+def set(domain: str, key: str, value: Any, ttl: int = 0) -> None:
     """Store a reusable value in a shared domain or remove it when None is supplied.
 
     Args:
@@ -210,7 +209,7 @@ def set(domain: str, key: str, value: _Any, ttl: int = 0) -> None:
     cache.set(key, value, ttl=ttl)
 
 
-def get(domain: str, key: str) -> _Any | None:
+def get(domain: str, key: str) -> Any | None:
     """Retrieve a retained value from a shared domain while it remains valid.
 
     Args:

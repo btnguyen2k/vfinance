@@ -14,7 +14,7 @@ def reset_domains(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def clock(monkeypatch: pytest.MonkeyPatch) -> Mock:
     clock = Mock(return_value=100.0)
-    monkeypatch.setattr(_cache, "_monotonic", clock)
+    monkeypatch.setattr(_cache, "monotonic", clock)
     return clock
 
 

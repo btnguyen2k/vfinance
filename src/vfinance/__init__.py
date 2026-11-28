@@ -1,5 +1,7 @@
 """Fetch Vietnam stock market data from public sources."""
 
-from importlib.metadata import version as _version
+from importlib.metadata import version
 
-__version__ = _version("vfinance")
+__all__ = ["__version__"]
+
+__version__ = version("vfinance")

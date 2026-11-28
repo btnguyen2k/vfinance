@@ -16,6 +16,7 @@ dependencies = [
     "cachetools>=8.0.0,<9",
     "cloudscraper>=1.2.0,<2",
     "playwright>=1.62.0,<2",
+    "pydantic>=2.14.0,<3",
 ]
 classifiers = [
     "Development Status :: 1 - Planning",
@@ -43,6 +44,10 @@ dev = [
 
 [tool.uv.build-backend]
 source-include = ["tests/**", "docs/**", "uv.lock"]
+
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
+default = true
 
 [[tool.uv.index]]
 name = "testpypi"

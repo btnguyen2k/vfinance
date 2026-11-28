@@ -18,10 +18,10 @@ vfinance
 |   `-- vfinance
 |       |-- __init__.py     # Package entry point and version
 |       |-- _cache.py       # Private LRU domains and per-entry TTL
-|       |-- _dnse.py        # Private DNSE/Entrade symbol profiles
+|       |-- _dnse.py        # Private DNSE/Entrade profiles and quotes
 |       |-- _utils.py       # Private async HTTP utilities
 |       |-- models.py       # Shared business data models
-|       |-- stocks.py       # Public symbol information API
+|       |-- stocks.py       # Public symbol information and quote APIs
 |       |-- utils.py        # Public ticker normalization
 |       `-- py.typed        # PEP 561 typing marker
 |-- tests
@@ -112,17 +112,55 @@ asyncio.run(main())
 
 Import the model with `from vfinance.models import SymbolInfo`; it is not
 re-exported from `vfinance.stocks` or the package root. Public APIs expose only
-objects defined in their own module.
+objects defined in their own module. Use normal dependency imports rather than
+underscore aliases added solely to hide imports; only declared API exports are
+subject to the no-re-export rule.
 
 `vfinance.models.SymbolInfo` contains `exchange`, `symbol`, `name`, and `overview`.
 Optional fields are `english_name`, `short_name`, `website`, `symbol_type`,
 `index_code`, `industry`, `sub_industry`, `sector`, `industry_group`, and
 `industry_group_slug`.
-`symbol_type` and `index_code` are uppercased. The classification fields contain
+Lookup results uppercase `symbol_type` and `index_code`. The classification fields contain
 the unchanged GICS labels and industry-group slug, not the source's separate
 non-GICS industry fields. Missing or null optional values are `None`; supplied
 empty strings remain empty. This response has no overview or website, so the
 overview is empty and the website remains `None`.
+
+`vfinance.models.StockQuote` contains a `datetime.datetime` timestamp, its
+ISO 8601 `timestamp_str`, exchange, symbol, float-valued `open`, `high`, and
+`low` prices, integer `volume`, and an optional float-valued `close`. Prices use
+VND per traded unit; volume counts traded units. All input fields except `close`
+are required. `timestamp_str` is derived automatically from `timestamp`,
+preserving fractional seconds and any timezone offset. Omitting `close` leaves
+it as `None`, indicating trading is ongoing and the closing price is not finalized.
+Like `SymbolInfo`, it is immutable. Timestamp timezone information is preserved.
+Import it from `vfinance.models`, not the package root or an API module.
+
+Both models inherit from Pydantic v2 `BaseModel`. Constructors use keyword
+arguments and validate types strictly rather than accepting numeric strings or
+other coercible values. Unexpected fields and non-finite prices are rejected
+with `pydantic.ValidationError`. Source-specific parsing and normalization remain
+in the adapters; models do not change text case or strip supplied whitespace.
+
+Use `model_dump()` for Python dictionaries, `model_dump(mode="json")` for
+JSON-compatible dictionaries, and `model_dump_json()` for JSON strings.
+Date/time values are serialized in ISO format, and `None` becomes `null`.
+
+```python
+from vfinance.models import SymbolInfo
+
+info = SymbolInfo(exchange="HOSE", symbol="FPT", name="FPT", overview="")
+info_json = info.model_dump_json()
+restored = SymbolInfo.model_validate_json(info_json)
+```
+
+`StockQuote.timestamp_str` is a computed output, not a constructor argument.
+Normal dumps include it. To serialize a quote for validation back into
+`StockQuote`, use `quote.model_dump_json(round_trip=True)`; this omits the
+computed field, which is recreated from the validated timestamp.
+For trusted updates, use `model_copy(update={...})` instead of
+`dataclasses.replace`. Copy updates are not revalidated; use `model_validate`
+or `model_validate_json` for untrusted input.
 
 The private `vfinance._dnse.get_info` adapter fetches
 `https://api.dnse.com.vn/market-api/tickers?symbol=<CODE>` and selects a matching
@@ -153,6 +191,63 @@ retried immediately.
 Fetching uses the standard-library HTTP helper and offloads network operations
 from the event loop. No browser installation is needed. Symbol API tests use
 synthetic JSON and mocked transports, not live requests.
+
+## Stock quotes
+
+`vfinance.stocks.get_quote(ticker)` is async and returns the latest available
+one-minute `StockQuote`, or `None` when a quote is unavailable. It accepts the
+same ticker formats and `raise_on_error` option as `get_info`, including
+presence-based exception propagation regardless of the option's value.
+Lookup failures are logged with ticker context and the original traceback;
+cancellation propagates without failure logging.
+
+```python
+import asyncio
+
+from vfinance import stocks
+
+
+async def main():
+    quote = await stocks.get_quote("FPT")
+    if quote is not None:
+        print(quote.model_dump_json())
+
+
+asyncio.run(main())
+```
+
+Successful quotes are cached in `STOCK-QUOTE`, keyed by the normalized symbol,
+for 300 seconds (5 minutes). Missing quotes and failures are not cached.
+Equivalent ticker formats share the same cached quote without renewing its TTL.
+
+## Private quote lookup
+
+`vfinance._dnse.get_quote` retrieves the latest available one-minute OHLCV bar.
+It normalizes the ticker and requests
+`/chart-api/v2/ohlcs/stock?symbol=<CODE>&resolution=1&from=<START>&to=<END>`,
+starting at midnight today in Asia/Ho_Chi_Minh (UTC+7) and ending at the current
+time. Both bounds are Unix seconds. Empty arrays move the end to `nextTime`
+and move the start backward in whole-day steps until the range is valid.
+The search includes today and at most 14 previous calendar days; older cursors
+return `None` without requesting an out-of-range day.
+This matters on weekends and holidays: DNSE returns null arrays for reversed
+ranges, which otherwise look like invalid-symbol responses.
+
+The final aligned `t`, `o`, `h`, `l`, `c`, and `v` entries form the quote.
+Timestamps become timezone-aware UTC+7 datetimes, and prices are multiplied by
+1000 to convert the response's thousands of VND to VND. Volume must represent
+whole traded units. A null final `c` stays `None`; zero remains zero.
+`get_info` supplies the authoritative listing exchange, rather than trusting a
+ticker prefix, and is fetched only after quote data is available.
+
+HTTP 404, JSON that is not an object or lacks any of `t`, `o`, `h`, `l`, or `c`,
+all-null arrays, exhausted history (`nextTime=0` or the 14-day limit), and an
+unavailable listing profile return `None`. This does not depend on specific
+error status/code/message fields. A usable quote also requires the `v` array.
+Other HTTP failures, malformed quote data, transport errors, and cancellation
+propagate. An empty response whose `nextTime` does not move backward is rejected
+instead of looping indefinitely. Tests use a controlled market clock and
+synthetic responses.
 
 ## Internal cache
 
