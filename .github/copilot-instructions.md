@@ -38,8 +38,8 @@ Keep source coverage in the source-test command, not the wheel check.
 ## Architecture
 
 - vfinance is a typed, `src`-layout library for Vietnam stock-market data.
-  The implemented runtime foundation is the private HTTP utility; data-source
-  adapters and the public quote, history, and event APIs are tracked in the
+  Implemented APIs include private HTTP utilities and async symbol information
+  in `vfinance.stocks`; the public quote, history, and event APIs are tracked in the
   [roadmap](../docs/roadmap.md).
 - `pyproject.toml` owns package metadata, dependency ranges, tool configuration,
   and the package version. `vfinance.__version__` reads installed distribution
@@ -48,15 +48,70 @@ Keep source coverage in the source-test command, not the wheel check.
 - `vfinance._utils` is the internal transport boundary. The CloudScraper helper
   offloads synchronous requests, decoding, and cleanup with `asyncio.to_thread`.
   The Playwright helper uses the async browser API and returns rendered HTML
-  from an isolated context/page. Keep both helpers private rather than
-  re-exporting them from the package root.
+  from an isolated context/page. The standard-library `fetch_url_async` uses
+  urllib for GET, with copied headers, a validated seconds-based timeout,
+  optional redirect following, and text decoding/cleanup in its worker.
+  Keep all HTTP helpers private rather than re-exporting them from the package root.
+- `vfinance._cache` defines internal `Cache` and `CacheEntry` classes. Each
+  `Cache` instance represents one cachetools LRU domain with a per-instance
+  lock and key-only set/get/delete methods. A synchronized module-level registry
+  maps domain names to shared `Cache` instances; module create_domain,
+  delete_domain, set, get, and delete functions manage and dispatch through it.
+  Invalid/non-positive domain capacities use 1000; existing domains retain their
+  instances, contents, and read-only capacity. Writes reset per-entry monotonic
+  TTLs; non-positive/non-integer TTLs disable expiry. None deletes a key, and
+  module set creates missing domains. Reads unwrap values and remove expired
+  entries without renewing TTLs. Get/delete misses do not create domains.
+  Cache tests isolate the module registry and advance a controlled clock rather
+  than sleeping.
+- `vfinance.models` defines shared business data models such as `SymbolInfo`.
+  Consumers import these types from `vfinance.models`; API modules reference
+  them through private module aliases rather than exposing imported types.
+- `vfinance.utils.normalize_ticker` accepts `CODE`, `CODE.VN`, or `EXCHANGE:CODE`
+  without validating the exchange prefix or symbol's existence. Codes may have
+  single dots between nonempty alphanumeric parts, but extracted codes must not
+  end with `.VN`. An exchange prefix and `.VN` suffix cannot be combined.
+  `vfinance._dnse.get_info` uses the standard-library HTTP helper to fetch DNSE
+  JSON profiles, matching the normalized code. It returns `None` for HTTP 404
+  or no match; normalization, transport, parsing, and profile exceptions
+  propagate unchanged. Other HTTP failures raise `RuntimeError`.
+  Exchange, instrument type, and index code are uppercase;
+  GICS labels and other supplied text stay unchanged, including empty strings.
+  Missing/null optional values are `None` and an unavailable overview is empty.
+  `vfinance.stocks.get_info` delegates to this adapter and returns `None` for
+  ordinary lookup errors as well as missing symbols; cancellation propagates.
 - Tests exercise the installed editable package during development and the
   installed wheel in the distribution job. Package smoke tests also import with
   Python's `-I` isolation from a temporary directory and verify `py.typed`.
   Preserve installed-package testing rather than adding source-path workarounds.
 
+## Public API documentation
+
+- Use Google-style docstrings for public functions and methods, with `Args`,
+  `Returns`, `Raises`, and `Notes` sections as applicable. Document public
+  returned models with `Attributes`.
+- Start with a concise description of the business purpose. Do not expose
+  underlying data sources or implementation details unless explicitly requested.
+- Document every input: type, accepted formats or values, units, defaults,
+  normalization, and validation rules where relevant, including supported kwargs.
+- Document the output type and meaning, returned model fields, and missing-data
+  behavior such as `None`, empty strings, or empty collections. Put complete
+  field descriptions and defaults on the returned model.
+- Document each deliberate exception and expected exception that can propagate,
+  with its type and trigger. Use qualified names for dependency exceptions.
+  Distinguish not-found results from failures and document async cancellation.
+- Include caller-visible limitations and known workarounds in `Notes`, including
+  temporary behavior that may change when supported by an existing plan. Do not
+  invent future guarantees. Keep internal design details in the development guide.
+- Keep documentation aligned with the implementation and existing tests; do not
+  claim validation, defaults, or behavior the API does not implement.
+
 ## Key conventions
 
+- Never re-export an import, including through compatibility aliases or
+  `__all__`. Public exports must be defined in the exporting module. Import
+  shared models from their defining module and use private module aliases
+  such as `_models.SymbolInfo` in consumers.
 - Keep `pyproject.toml` and `uv.lock` aligned when changing dependencies. Routine
   commands use `--locked`; dependency updates use `uv add`, `uv remove`, or
   `uv lock --upgrade`. The lockfile fixes development/CI versions, while package
@@ -82,7 +137,8 @@ Keep source coverage in the source-test command, not the wheel check.
   redirects by default; `allow_redirects=False` exposes an unfollowed redirect's
   `Location` as an absolute `redirect_url`, resolved against the response URL.
 - HTTP tests use `asyncio.run` with mocked responses or transport adapters,
-  including real CloudScraper redirect handling without live website requests.
+  including real urllib and CloudScraper redirect handling without live website
+  requests.
 - Keep the [README](../README.md) business-focused. Contributor internals belong
   in the development guide; planned capabilities and implementation status
   belong in the roadmap.

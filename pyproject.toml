@@ -12,6 +12,8 @@ license = "MIT"
 license-files = ["LICENSE.md"]
 authors = [{ name = "Thanh Ba Nguyen" }]
 dependencies = [
+    "beautifulsoup4>=4.15.0,<5",
+    "cachetools>=8.0.0,<9",
     "cloudscraper>=1.2.0,<2",
     "playwright>=1.62.0,<2",
 ]

@@ -17,10 +17,19 @@ vfinance
 |-- src
 |   `-- vfinance
 |       |-- __init__.py     # Package entry point and version
+|       |-- _cache.py       # Private LRU domains and per-entry TTL
+|       |-- _dnse.py        # Private DNSE/Entrade symbol profiles
 |       |-- _utils.py       # Private async HTTP utilities
+|       |-- models.py       # Shared business data models
+|       |-- stocks.py       # Public symbol information API
+|       |-- utils.py        # Public ticker normalization
 |       `-- py.typed        # PEP 561 typing marker
 |-- tests
+|   |-- test_cache.py       # Domain lifecycle, LRU behavior, and TTL
+|   |-- test_dnse.py        # Symbol JSON parsing and fetching
 |   |-- test_package.py     # Installation and package-data smoke tests
+|   |-- test_stocks.py      # Public symbol API delegation and errors
+|   |-- test_ticker_utils.py # Public ticker normalization
 |   `-- test_utils.py       # HTTP helper behavior and error handling
 |-- .editorconfig
 |-- .gitignore
@@ -71,15 +80,138 @@ excluded by `.gitignore`. Do not commit them. Keep `uv.lock` in version control;
 it makes contributor and CI environments reproducible without pinning the
 dependencies of people installing the published package.
 
+## Symbol information
+
+`vfinance.stocks.get_info(ticker)` is async and returns a `SymbolInfo` from
+`vfinance.models`, populated with DNSE/Entrade profiles for company stocks and
+other instruments such as ETFs. It accepts `CODE`, `EXCHANGE:CODE`, or `CODE.VN`,
+ignoring case and surrounding whitespace.
+These forms cannot be combined: `EXCHANGE:CODE.VN` is invalid. Codes may contain
+single dots between nonempty alphanumeric parts, such as `ABC.Z`; `ABC.Z.VN`
+and `HOSE:ABC.Z` both identify `ABC.Z`. Extracted codes must not end with `.VN`,
+so repeated suffixes such as `ABC.VN.VN` are invalid. Other dotted endings, such
+as `.US`, remain part of the code rather than being treated as country suffixes.
+`vfinance.utils.normalize_ticker` exposes the same uppercase code extraction
+for reuse. Prefixes are discarded rather than validated against the source;
+the returned exchange is the uppercase reported listing venue.
+
+```python
+import asyncio
+
+from vfinance.stocks import get_info
+
+
+async def main() -> None:
+    info = await get_info("HOSE:BID")
+    if info is not None:
+        print(info.symbol, info.exchange, info.name)
+
+
+asyncio.run(main())
+```
+
+Import the model with `from vfinance.models import SymbolInfo`; it is not
+re-exported from `vfinance.stocks` or the package root. Public APIs expose only
+objects defined in their own module.
+
+`vfinance.models.SymbolInfo` contains `exchange`, `symbol`, `name`, and `overview`.
+Optional fields are `english_name`, `short_name`, `address`, `phone`, `fax`, `email`,
+`website`, `tax_id`, `business_status`, `symbol_type`, `index_code`, `industry`,
+`sub_industry`, `sector`, `industry_group`, and `industry_group_slug`.
+`symbol_type` and `index_code` are uppercased. The classification fields contain
+the unchanged GICS labels and industry-group slug, not the source's separate
+non-GICS industry fields. Missing or null optional values are `None`; supplied
+empty strings remain empty. This response has no overview or contact/registration
+details, so the overview is empty and those optional fields retain their defaults.
+
+The private `vfinance._dnse.get_info` adapter fetches
+`https://api.dnse.com.vn/market-api/tickers?symbol=<CODE>` and selects a matching
+symbol from the JSON `data` list. It returns `None` for HTTP 404 or no match.
+Malformed tickers raise `ValueError` (or `TypeError` for non-string input).
+Other HTTP failures raise `RuntimeError`; normalization, JSON parsing, profile
+validation, and transport exceptions propagate unchanged. The JSON uses
+`gicsIndustryGroup` and `gicsIndustryGroupSlug` for the group fields.
+
+The public `vfinance.stocks.get_info` wrapper also returns `None` for ordinary
+lookup errors, including non-string input, HTTP failures, and transport/parsing
+failures; cancellation still propagates. Thus `None` does not distinguish an
+unknown symbol from a failed lookup. The public normalization utility raises
+`ValueError` for malformed strings and `TypeError` for non-string inputs; it
+does not check whether a symbol exists.
+
+Fetching uses the standard-library HTTP helper and offloads network operations
+from the event loop. No browser installation is needed. Symbol API tests use
+synthetic JSON and mocked transports, not live requests.
+
+## Internal cache
+
+`vfinance._cache` holds a process-wide dictionary of named `Cache` instances.
+Each instance represents one domain backed by a cachetools `LRUCache`, counting
+entries rather than bytes. Module-level `create_domain`, `delete_domain`, `set`,
+`get`, and `delete` manage this registry and dispatch to the registered instance.
+Domain names and keys are used unchanged. Creating a domain defaults to 1000
+entries; non-positive or non-integer sizes, including booleans, use 1000.
+
+cachetools exposes a [read-only maximum size](https://cachetools.readthedocs.io/en/stable/#cachetools.Cache.maxsize).
+Creating an existing domain does nothing: its values and limit are retained.
+Delete and recreate the domain to change its capacity, discarding its old values.
+Deleting missing domains or keys is harmless.
+
+```python
+import vfinance._cache as cache
+
+cache.create_domain("symbol-info", max_size=1000)
+cache.set("symbol-info", "FPT", {"name": "CTCP FPT"}, ttl=300)
+info = cache.get("symbol-info", "FPT")
+cache.delete("symbol-info", "FPT")
+cache.delete_domain("symbol-info")
+```
+
+Module-level `set` creates missing domains, including when its value is `None`;
+`None` removes the key instead of being cached. Every write wraps the value in a new
+`CacheEntry` and restarts its TTL, even if the key and value are unchanged.
+Positive integer TTLs are seconds measured with a monotonic clock. Non-positive
+or non-integer TTLs, including booleans, disable expiry. Unrepresentably large
+positive TTLs use an infinite deadline.
+
+`get` returns the original value or `None` for a missing domain/key or expired
+entry. An expired entry is removed when read; there is no background expiry
+sweep. Successful reads update LRU order without extending the TTL. A full
+domain evicts its least recently used entry.
+
+Module functions share named domains across all callers in the same process.
+For independent storage outside the registry, construct `Cache(max_size=...)`
+directly. Its `set(key, value, ttl=0)`, `get(key)`, and `delete(key)` methods do not
+take a domain name.
+
+A registry lock protects domain lifecycle and lookup, and a per-instance lock
+protects each domain's cache operations across threads. Returned values are
+references and are not protected against external mutation. Cache classes and
+functions remain internal and are not re-exported from the package root.
+Cache tests isolate the module registry and use a controlled clock rather than
+sleeping.
+
 ## HTTP utilities
 
-Private helpers in `vfinance._utils` return `HttpResponse` objects. The
-Playwright helper accepts a `Browser` from the async API and returns the rendered
+Private helpers in `vfinance._utils` return `HttpResponse` objects.
+`fetch_url_async(url, **kwargs)` uses only standard-library HTTP operations:
+it copies `headers` into a GET request and accepts a socket `timeout` in seconds
+(30 by default; invalid values fall back to 30). HTTP(S) redirects are followed unless
+`allow_redirects=False`, which returns an absolute pending `redirect_url`.
+Unsupported kwargs are ignored. Fetching, decoding, and response cleanup run
+in a worker thread; cancellation does not stop that blocking worker.
+
+The standard-library helper decodes gzip/deflate content and the declared
+charset, falling back to UTF-8 for missing or unknown charsets and replacing
+undecodable characters. Unsupported content encodings raise `ValueError`.
+It accepts only HTTP(S) URLs and does not render JavaScript.
+
+The Playwright helper accepts a `Browser` from the async API and returns the rendered
 DOM after navigation (`load` by default), rather than the raw response body.
 It creates and closes an isolated context/page for each call, leaving the
 caller's browser open. Its `timeout` is in milliseconds (30,000 by default;
 0 disables it); supported context and navigation options are copied explicitly.
-Both helpers return ordinary HTTP error statuses and propagate request,
+All helpers return ordinary HTTP error statuses and propagate request,
 navigation, and content-reading exceptions to the awaiting caller.
 
 **WebKit is the default browser for Playwright-based fetching.** Launch it with

@@ -9,6 +9,7 @@ bring Vietnam market data into research, monitoring, and reporting workflows.
 
 | Feature                      | Business impact                                                                               |
 |------------------------------|-----------------------------------------------------------------------------------------------|
+| **Symbol information**       | Research stocks and ETFs with profiles, exchanges, instrument types, indices, and industries. |
 | **Vietnamese ticker quotes** | Fetch a ticker's quote to support market monitoring and pricing views.                        |
 | **Ticker history**           | Fetch historical market data for trend analysis, investment research, and backtesting.        |
 | **Market events**            | Fetch new listings, dividends, and other events to add context to market and ticker analysis. |

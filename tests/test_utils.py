@@ -1,8 +1,15 @@
 import asyncio
+import gzip
 import math
+import zlib
+from email.message import Message
+from io import BytesIO
 from threading import get_ident
 from typing import Any
 from unittest.mock import Mock, PropertyMock
+from urllib import request as urllib_request
+from urllib.error import HTTPError, URLError
+from urllib.response import addinfourl
 
 import pytest
 from cloudscraper import CloudScraper
@@ -16,6 +23,7 @@ from requests.exceptions import ChunkedEncodingError, ConnectionError, Timeout
 
 from vfinance._utils import (
     HttpResponse,
+    fetch_url_async,
     fetch_url_cloudscraper_async,
     fetch_url_playwright_async,
 )
@@ -55,6 +63,284 @@ def scraper(response: Response) -> Mock:
 )
 def test_is_successful(status: int, expected: bool) -> None:
     assert HttpResponse(status=status, content="").is_successful() is expected
+
+
+@pytest.fixture
+def stdlib_response() -> addinfourl:
+    return addinfourl(
+        BytesIO("Gi\u00e1: 123".encode("utf-8")),
+        Message(),
+        "https://example.test/market/quote",
+        code=200,
+    )
+
+
+@pytest.fixture
+def stdlib_opener(stdlib_response: addinfourl, monkeypatch: pytest.MonkeyPatch) -> Mock:
+    opener = Mock(spec=urllib_request.OpenerDirector)
+    opener.open.return_value = stdlib_response
+    monkeypatch.setattr(urllib_request, "build_opener", Mock(return_value=opener))
+    return opener
+
+
+def test_stdlib_fetch_reads_and_closes_response_in_worker(
+    stdlib_response: addinfourl,
+    stdlib_opener: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event_loop_thread = get_ident()
+    worker_threads: list[int] = []
+    original_read = stdlib_response.read
+    original_close = stdlib_response.close
+
+    def open_response(*args, **kwargs) -> addinfourl:
+        worker_threads.append(get_ident())
+        return stdlib_response
+
+    def read_content() -> bytes:
+        worker_threads.append(get_ident())
+        return original_read()
+
+    def close_response() -> None:
+        worker_threads.append(get_ident())
+        original_close()
+
+    stdlib_opener.open.side_effect = open_response
+    monkeypatch.setattr(stdlib_response, "read", read_content)
+    monkeypatch.setattr(stdlib_response, "close", close_response)
+
+    result = asyncio.run(fetch_url_async(stdlib_response.geturl()))
+
+    assert result == HttpResponse(status=200, content="Gi\u00e1: 123")
+    assert stdlib_opener.open.call_args.kwargs == {"timeout": 30}
+    assert stdlib_response.closed
+    assert len(worker_threads) == 3
+    assert all(thread != event_loop_thread for thread in worker_threads)
+
+
+@pytest.mark.parametrize("timeout", [5, 2.5])
+def test_stdlib_fetch_copies_headers_and_supported_options(
+    timeout: int | float, stdlib_response: addinfourl, stdlib_opener: Mock
+) -> None:
+    headers = {"X-Test": "value"}
+
+    asyncio.run(
+        fetch_url_async(
+            stdlib_response.geturl(),
+            headers=headers,
+            timeout=timeout,
+            method="POST",
+            data=b"ignored",
+            unknown_option="ignored",
+        )
+    )
+
+    request = stdlib_opener.open.call_args.args[0]
+    assert request.full_url == stdlib_response.geturl()
+    assert request.get_method() == "GET"
+    assert request.get_header("X-test") == "value"
+    assert headers == {"X-Test": "value"}
+    assert stdlib_opener.open.call_args.kwargs == {"timeout": timeout}
+
+
+@pytest.mark.parametrize(
+    "timeout", [None, 0, -1, "30", True, False, math.nan, math.inf, -math.inf]
+)
+def test_stdlib_fetch_defaults_invalid_timeout(
+    timeout: Any, stdlib_response: addinfourl, stdlib_opener: Mock
+) -> None:
+    asyncio.run(fetch_url_async(stdlib_response.geturl(), timeout=timeout))
+
+    assert stdlib_opener.open.call_args.kwargs == {"timeout": 30}
+
+
+@pytest.mark.parametrize("status", [404, 503])
+def test_stdlib_fetch_returns_http_errors_and_closes_body(
+    status: int, stdlib_opener: Mock
+) -> None:
+    body = BytesIO(b"Upstream error")
+    error = HTTPError("https://example.test/quote", status, "Error", Message(), body)
+    stdlib_opener.open.side_effect = error
+
+    result = asyncio.run(fetch_url_async(error.geturl()))
+
+    assert result == HttpResponse(status=status, content="Upstream error")
+    assert body.closed
+
+
+@pytest.mark.parametrize(
+    ("content_type", "body", "expected"),
+    [
+        ("text/plain; charset=iso-8859-1", b"Gi\xe1", "Gi\u00e1"),
+        ("text/plain; charset=not-a-codec", b"Text", "Text"),
+        (None, b"A\xffB", "A\ufffdB"),
+    ],
+)
+def test_stdlib_fetch_decodes_charset_and_replaces_invalid_text(
+    content_type: str | None,
+    body: bytes,
+    expected: str,
+    stdlib_response: addinfourl,
+    stdlib_opener: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if content_type:
+        stdlib_response.headers["Content-Type"] = content_type
+    monkeypatch.setattr(stdlib_response, "read", Mock(return_value=body))
+
+    result = asyncio.run(fetch_url_async(stdlib_response.geturl()))
+
+    assert result.content == expected
+    assert stdlib_response.closed
+
+
+@pytest.mark.parametrize(
+    ("encoding", "body"),
+    [
+        ("gzip", gzip.compress(b"Text")),
+        ("deflate", zlib.compress(b"Text")),
+        ("deflate", zlib.compress(b"Text")[2:-4]),
+        ("gzip, deflate", zlib.compress(gzip.compress(b"Text"))),
+    ],
+)
+def test_stdlib_fetch_decodes_compressed_content(
+    encoding: str,
+    body: bytes,
+    stdlib_response: addinfourl,
+    stdlib_opener: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stdlib_response.headers["Content-Encoding"] = encoding
+    monkeypatch.setattr(stdlib_response, "read", Mock(return_value=body))
+
+    result = asyncio.run(fetch_url_async(stdlib_response.geturl()))
+
+    assert result.content == "Text"
+    assert stdlib_response.closed
+
+
+def test_stdlib_fetch_closes_response_for_unsupported_content_encoding(
+    stdlib_response: addinfourl,
+    stdlib_opener: Mock,
+) -> None:
+    stdlib_response.headers["Content-Encoding"] = "br"
+
+    with pytest.raises(ValueError, match="Unsupported Content-Encoding: br"):
+        asyncio.run(fetch_url_async(stdlib_response.geturl()))
+    assert stdlib_response.closed
+
+
+@pytest.mark.parametrize("allow_redirects", [True, False])
+@pytest.mark.parametrize(
+    "location", ["../quote", "ftp://example.test/quote", "file:///C:/example.txt"]
+)
+def test_stdlib_fetch_follows_or_exposes_redirects(
+    allow_redirects: bool, location: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    start = "http://example.test/market/start"
+    target = "http://example.test/quote" if location == "../quote" else location
+    requests: list[str] = []
+    responses: list[addinfourl] = []
+
+    class MemoryHTTPHandler(urllib_request.HTTPHandler):
+        def http_open(self, request: urllib_request.Request) -> addinfourl:
+            requests.append(request.full_url)
+            headers = Message()
+            if request.full_url == start:
+                headers["Location"] = location
+                response = addinfourl(
+                    BytesIO(b"Redirect"), headers, request.full_url, code=302
+                )
+                response.msg = "Found"
+                responses.append(response)
+                return response
+            assert request.full_url == target
+            response = addinfourl(
+                BytesIO(b"Target"), headers, request.full_url, code=200
+            )
+            response.msg = "OK"
+            responses.append(response)
+            return response
+
+    build_opener = urllib_request.build_opener
+
+    def create_opener(*handlers) -> urllib_request.OpenerDirector:
+        return build_opener(
+            urllib_request.ProxyHandler({}), MemoryHTTPHandler(), *handlers
+        )
+
+    monkeypatch.setattr(urllib_request, "build_opener", create_opener)
+
+    result = asyncio.run(fetch_url_async(start, allow_redirects=allow_redirects))
+
+    if allow_redirects and location == "../quote":
+        assert result == HttpResponse(status=200, content="Target")
+        assert requests == [start, target]
+    else:
+        assert result == HttpResponse(
+            status=302, content="Redirect", redirect_url=target
+        )
+        assert requests == [start]
+    assert all(response.closed for response in responses)
+
+
+def test_stdlib_fetch_propagates_transport_errors(stdlib_opener: Mock) -> None:
+    error = URLError("offline")
+    stdlib_opener.open.side_effect = error
+
+    with pytest.raises(URLError) as caught:
+        asyncio.run(fetch_url_async("https://example.test"))
+    assert caught.value is error
+
+
+def test_stdlib_fetch_closes_response_when_body_reading_fails(
+    stdlib_response: addinfourl,
+    stdlib_opener: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    error = OSError("Body read failed")
+    monkeypatch.setattr(stdlib_response, "read", Mock(side_effect=error))
+
+    with pytest.raises(OSError) as caught:
+        asyncio.run(fetch_url_async(stdlib_response.geturl()))
+    assert caught.value is error
+    assert stdlib_response.closed
+
+
+def test_stdlib_fetch_closes_redirect_response_when_body_reading_fails(
+    stdlib_response: addinfourl, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stdlib_response.code = 302
+    stdlib_response.msg = "Found"
+    stdlib_response.headers["Location"] = "/quote"
+    error = OSError("Redirect body read failed")
+    monkeypatch.setattr(stdlib_response, "read", Mock(side_effect=error))
+
+    class MemoryHTTPHandler(urllib_request.HTTPHandler):
+        def http_open(self, request: urllib_request.Request) -> addinfourl:
+            return stdlib_response
+
+    build_opener = urllib_request.build_opener
+    monkeypatch.setattr(
+        urllib_request,
+        "build_opener",
+        lambda *handlers: build_opener(
+            urllib_request.ProxyHandler({}), MemoryHTTPHandler(), *handlers
+        ),
+    )
+
+    with pytest.raises(OSError) as caught:
+        asyncio.run(fetch_url_async("http://example.test/start"))
+    assert caught.value is error
+    assert stdlib_response.closed
+
+
+@pytest.mark.parametrize(
+    "url", ["file:///C:/example.txt", "ftp://example.test/file", "data:text/plain,text"]
+)
+def test_stdlib_fetch_rejects_non_http_urls(url: str) -> None:
+    with pytest.raises(ValueError, match="HTTP or HTTPS"):
+        asyncio.run(fetch_url_async(url))
 
 
 @pytest.mark.parametrize("status", [200, 503])

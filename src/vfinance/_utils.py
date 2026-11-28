@@ -1,10 +1,14 @@
 """Private HTTP utilities for data-source implementations."""
 
 import asyncio
+import gzip
 import math
+import zlib
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urljoin
+from urllib import request as urllib_request
+from urllib.error import HTTPError
+from urllib.parse import urljoin, urlsplit
 
 from cloudscraper import CloudScraper
 from playwright.async_api import Browser
@@ -21,6 +25,120 @@ class HttpResponse:
     def is_successful(self) -> bool:
         """Return whether the status is in the non-error range 100-399."""
         return 100 <= self.status < 400
+
+
+class _HttpRedirectHandler(urllib_request.HTTPRedirectHandler):
+    def __init__(self, allow_redirects: bool) -> None:
+        self.allow_redirects = allow_redirects
+
+    def redirect_request(
+        self,
+        req: urllib_request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib_request.Request | None:
+        if not self.allow_redirects or urlsplit(newurl).scheme not in {"http", "https"}:
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    def http_error_302(
+        self,
+        req: urllib_request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+    ) -> Any:
+        try:
+            return super().http_error_302(req, fp, code, msg, headers)
+        except HTTPError:
+            # The fetcher reads and closes the error response.
+            raise
+        except BaseException:
+            fp.close()
+            raise
+
+    http_error_301 = http_error_303 = http_error_307 = http_error_308 = http_error_302
+
+
+async def fetch_url_async(url: str, **kwargs: Any) -> HttpResponse:
+    """Fetch HTTP(S) text using Python's standard library without blocking.
+
+    Copy headers into a GET request. A positive, finite int/float timeout sets
+    the socket timeout in seconds; missing or invalid values (including bools)
+    default to 30. Follow HTTP(S) redirects unless allow_redirects is false.
+    Ignore unsupported kwargs.
+
+    Decode gzip/deflate content and the declared charset, falling back to UTF-8
+    for missing or unknown charsets. Replace undecodable characters. Unsupported
+    content encodings raise ValueError.
+
+    Return HTTP error statuses normally and resolve pending redirect targets.
+    Propagate transport and body-reading errors. Close the response in the
+    worker; cancelling the coroutine does not stop its blocking request.
+    """
+    if urlsplit(url).scheme not in {"http", "https"}:
+        raise ValueError("URL must use HTTP or HTTPS")
+
+    timeout = kwargs.get("timeout", 30)
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not 0 < timeout < math.inf
+    ):
+        timeout = 30
+
+    request_kwargs: dict[str, Any] = {"method": "GET"}
+    if "headers" in kwargs:
+        request_kwargs["headers"] = dict(kwargs["headers"])
+    allow_redirects = kwargs.get("allow_redirects", True)
+
+    def fetch() -> HttpResponse:
+        request = urllib_request.Request(url, **request_kwargs)
+        opener = urllib_request.build_opener(_HttpRedirectHandler(allow_redirects))
+        try:
+            response = opener.open(request, timeout=timeout)
+        except HTTPError as error:
+            response = error
+
+        with response:
+            body = response.read()
+            encodings = response.headers.get("Content-Encoding", "").lower().split(",")
+            for encoding in reversed(encodings):
+                encoding = encoding.strip()
+                if encoding in {"", "identity"}:
+                    continue
+                if encoding == "gzip":
+                    body = gzip.decompress(body)
+                elif encoding == "deflate":
+                    try:
+                        body = zlib.decompress(body)
+                    except zlib.error:
+                        body = zlib.decompress(body, -zlib.MAX_WBITS)
+                else:
+                    raise ValueError(f"Unsupported Content-Encoding: {encoding}")
+
+            charset = response.headers.get_content_charset() or "utf-8"
+            try:
+                content = body.decode(charset, errors="replace")
+            except LookupError:
+                content = body.decode("utf-8", errors="replace")
+
+            status = response.getcode()
+            location = response.headers.get("Location")
+            redirect_url = (
+                urljoin(response.geturl(), location)
+                if status in {301, 302, 303, 307, 308} and location
+                else None
+            )
+            return HttpResponse(
+                status=status, content=content, redirect_url=redirect_url
+            )
+
+    return await asyncio.to_thread(fetch)
 
 
 async def fetch_url_cloudscraper_async(

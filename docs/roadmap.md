@@ -5,14 +5,16 @@ Implementation status is tracked here, separately from the
 
 ## Current status
 
-The repository currently provides the packaging and development scaffold.
-Data fetching is not implemented yet.
+The package provides packaging and development tooling, private async HTTP
+utilities, and an async symbol-information API backed by DNSE/Entrade for
+HOSE, HNX, and UPCOM.
 
-## Planned core capabilities
+## Core capabilities
 
+- [x] Fetch a Vietnamese ticker's information, including company stocks and ETFs.
 - [ ] Fetch a Vietnamese ticker's quote.
 - [ ] Fetch a ticker's historical market data.
 - [ ] Fetch events such as new listings, dividends, and other market events.
 
-These capabilities require data-source adapters and a public fetching API.
+The remaining capabilities require additional data-source adapters and public APIs.
 See the [development guide](development.md) for contributor setup and conventions.
