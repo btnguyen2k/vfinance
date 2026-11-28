@@ -120,8 +120,8 @@ subject to the no-re-export rule.
 Optional fields are `english_name`, `short_name`, `website`, `symbol_type`,
 `index_code`, `industry`, `sub_industry`, `sector`, `industry_group`, and
 `industry_group_slug`.
-Lookup results uppercase `symbol_type` and `index_code`. The classification fields contain
-the unchanged GICS labels and industry-group slug, not the source's separate
+Lookup results uppercase `symbol_type` and `index_code`. The classification fields
+contain the unchanged GICS labels and industry-group slug, not the source's separate
 non-GICS industry fields. Missing or null optional values are `None`; supplied
 empty strings remain empty. This response has no overview or website, so the
 overview is empty and the website remains `None`.
@@ -137,8 +137,8 @@ Like `SymbolInfo`, it is immutable. Timestamp timezone information is preserved.
 Import it from `vfinance.models`, not the package root or an API module.
 
 Both models inherit from Pydantic v2 `BaseModel`. Constructors use keyword
-arguments and validate types strictly rather than accepting numeric strings or
-other coercible values. Unexpected fields and non-finite prices are rejected
+arguments and strict type validation; numeric strings and boolean volumes are
+not accepted. Unexpected fields and non-finite prices are rejected
 with `pydantic.ValidationError`. Source-specific parsing and normalization remain
 in the adapters; models do not change text case or strip supplied whitespace.
 
