@@ -78,8 +78,15 @@ Keep source coverage in the source-test command, not the wheel check.
   Exchange, instrument type, and index code are uppercase;
   GICS labels and other supplied text stay unchanged, including empty strings.
   Missing/null optional values are `None` and an unavailable overview is empty.
-  `vfinance.stocks.get_info` delegates to this adapter and returns `None` for
-  ordinary lookup errors as well as missing symbols; cancellation propagates.
+  `vfinance.stocks.get_info` caches successful profiles in `SYMBOL-INFO`, keyed
+  by the normalized symbol, for 86400 seconds (24 hours). Cache misses delegate
+  to this adapter; missing symbols and lookup errors are not cached.
+  Ordinary errors are logged with ticker context, exception type and message,
+  and the original traceback through the `vfinance.stocks` logger, without
+  configuring application handlers.
+  They return `None` unless the `raise_on_error` keyword is supplied, regardless
+  of its value, in which case the original exception is re-raised. Missing
+  symbols still return `None`; cancellation propagates without failure logging.
 - Tests exercise the installed editable package during development and the
   installed wheel in the distribution job. Package smoke tests also import with
   Python's `-I` isolation from a temporary directory and verify `py.typed`.
@@ -91,7 +98,12 @@ Keep source coverage in the source-test command, not the wheel check.
   `Returns`, `Raises`, and `Notes` sections as applicable. Document public
   returned models with `Attributes`.
 - Start with a concise description of the business purpose. Do not expose
-  underlying data sources or implementation details unless explicitly requested.
+  underlying data sources or implementation details unless explicitly requested
+  for that public documentation.
+- A request to implement or change a technical feature is not permission to
+  explain its internals in public documentation. Keep implementation details
+  in the development guide unless technical public documentation is explicitly
+  requested.
 - Document every input: type, accepted formats or values, units, defaults,
   normalization, and validation rules where relevant, including supported kwargs.
 - Document the output type and meaning, returned model fields, and missing-data
@@ -100,11 +112,20 @@ Keep source coverage in the source-test command, not the wheel check.
 - Document each deliberate exception and expected exception that can propagate,
   with its type and trigger. Use qualified names for dependency exceptions.
   Distinguish not-found results from failures and document async cancellation.
-- Include caller-visible limitations and known workarounds in `Notes`, including
-  temporary behavior that may change when supported by an existing plan. Do not
+- Do not add a `Notes` section automatically because a template supports it.
+  Use it only for essential business-facing limitations or known workarounds,
+  not implementation mechanics or repeated input/output/exception details.
+  Describe temporary behavior only when supported by an existing plan; do not
   invent future guarantees. Keep internal design details in the development guide.
 - Keep documentation aligned with the implementation and existing tests; do not
   claim validation, defaults, or behavior the API does not implement.
+- Before declaring a change complete, review the entire affected public
+  docstring, including unchanged text, against these rules rather than checking
+  only the diff. Functional correctness and documentation compliance are
+  separate acceptance gates; both must pass.
+- When a documentation violation is reported, reassess the whole affected
+  section against the ground rule and correct all related violations. Do not
+  limit the correction to the last offending sentence.
 
 ## Key conventions
 

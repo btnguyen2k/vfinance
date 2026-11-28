@@ -1,9 +1,11 @@
 import subprocess
 import sys
+from dataclasses import asdict
 from importlib.resources import files
 from pathlib import Path
 
 import vfinance
+from vfinance.models import SymbolInfo
 
 
 def test_package_imports_without_repository_on_python_path(tmp_path: Path) -> None:
@@ -39,6 +41,19 @@ def test_package_imports_without_repository_on_python_path(tmp_path: Path) -> No
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_symbol_info_omits_removed_profile_fields() -> None:
+    info = SymbolInfo(exchange="HOSE", symbol="FPT", name="CTCP FPT", overview="")
+
+    assert {
+        "address",
+        "phone",
+        "fax",
+        "email",
+        "tax_id",
+        "business_status",
+    }.isdisjoint(asdict(info))
 
 
 def test_typing_marker_is_packaged() -> None:

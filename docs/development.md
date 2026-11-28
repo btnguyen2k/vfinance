@@ -115,14 +115,14 @@ re-exported from `vfinance.stocks` or the package root. Public APIs expose only
 objects defined in their own module.
 
 `vfinance.models.SymbolInfo` contains `exchange`, `symbol`, `name`, and `overview`.
-Optional fields are `english_name`, `short_name`, `address`, `phone`, `fax`, `email`,
-`website`, `tax_id`, `business_status`, `symbol_type`, `index_code`, `industry`,
-`sub_industry`, `sector`, `industry_group`, and `industry_group_slug`.
+Optional fields are `english_name`, `short_name`, `website`, `symbol_type`,
+`index_code`, `industry`, `sub_industry`, `sector`, `industry_group`, and
+`industry_group_slug`.
 `symbol_type` and `index_code` are uppercased. The classification fields contain
 the unchanged GICS labels and industry-group slug, not the source's separate
 non-GICS industry fields. Missing or null optional values are `None`; supplied
-empty strings remain empty. This response has no overview or contact/registration
-details, so the overview is empty and those optional fields retain their defaults.
+empty strings remain empty. This response has no overview or website, so the
+overview is empty and the website remains `None`.
 
 The private `vfinance._dnse.get_info` adapter fetches
 `https://api.dnse.com.vn/market-api/tickers?symbol=<CODE>` and selects a matching
@@ -134,10 +134,21 @@ validation, and transport exceptions propagate unchanged. The JSON uses
 
 The public `vfinance.stocks.get_info` wrapper also returns `None` for ordinary
 lookup errors, including non-string input, HTTP failures, and transport/parsing
-failures; cancellation still propagates. Thus `None` does not distinguish an
-unknown symbol from a failed lookup. The public normalization utility raises
+failures, and logs the ticker, exception type and message, and original traceback
+through the `vfinance.stocks` logger. It does not configure logging handlers.
+Supplying the `raise_on_error` keyword, regardless of its value, re-raises the
+original exception after logging it. Missing symbols still return `None`, and
+cancellation always propagates without being logged as a lookup failure.
+By default, `None` does not distinguish an unknown symbol from a failed lookup.
+The public normalization utility raises
 `ValueError` for malformed strings and `TypeError` for non-string inputs; it
 does not check whether a symbol exists.
+
+Successful profiles are cached in the internal `SYMBOL-INFO` domain using the
+normalized bare symbol as the key and a TTL of 86400 seconds (24 hours).
+Equivalent ticker formats share a cached profile, and only cache misses reach
+the adapter. Missing symbols and failed lookups are not cached, so they can be
+retried immediately.
 
 Fetching uses the standard-library HTTP helper and offloads network operations
 from the event loop. No browser installation is needed. Symbol API tests use
